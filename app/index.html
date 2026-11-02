@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Pipeline</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 680px; margin: 32px auto; padding: 0 16px; color: #111; line-height: 1.4; }
+    h1 { font-size: 20px; margin-bottom: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    input, button { font-size: 13px; padding: 6px 10px; }
+    button { cursor: pointer; background: #0f172a; color: #fff; border: 1px solid #0f172a; border-radius: 4px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .bar { width: 100%; background: #e2e8f0; height: 12px; border-radius: 3px; overflow: hidden; margin: 6px 0; }
+    .bar-fill { background: #2563eb; height: 100%; width: 0%; transition: width 0.2s; }
+    .box { border: 1px solid #cbd5e1; border-radius: 4px; padding: 12px; margin-top: 16px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; }
+    th { background: #f8fafc; }
+    video { width: 100%; max-height: 360px; background: #000; border-radius: 4px; margin-top: 10px; }
+    .hidden { display: none; }
+    .muted { color: #64748b; font-size: 12px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/tus-js-client@3.1.3/dist/tus.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
+</head>
+<body>
+  <h1>HLS Pipeline</h1>
+
+  <div class="box">
+    <div class="row">
+      <input type="file" id="fileInput" accept="video/*">
+      <button id="btnUpload" onclick="startUpload()">Upload</button>
+    </div>
+    <div class="row muted">
+      <label>Segment: <input type="number" id="segDur" value="4" min="1" max="10" style="width:45px">s</label>
+      <label><input type="checkbox" id="chkQC" checked> VMAF + XPSNR</label>
+      <label><input type="checkbox" id="chkHW"> HW encoder</label>
+    </div>
+    <div id="uploadWrap" class="hidden">
+      <div class="muted" id="uploadStatus">0%</div>
+      <div class="bar"><div id="uploadBar" class="bar-fill"></div></div>
+    </div>
+  </div>
+
+  <div id="procBox" class="box hidden">
+    <div class="row" style="justify-content:space-between">
+      <strong>Processing</strong>
+      <span id="procStep" class="muted">queued</span>
+    </div>
+    <div class="bar"><div id="procBar" class="bar-fill" style="background:#059669"></div></div>
+    <div id="procMsg" class="muted">queued</div>
+  </div>
+
+  <div id="resultBox" class="box hidden">
+    <div class="row" style="justify-content:space-between; margin-bottom:4px;">
+      <strong>Result</strong>
+      <span id="encoderInfo" class="muted"></span>
+    </div>
+    <video id="videoPlayer" controls playsinline></video>
+    <div class="muted" style="margin-top:6px;">Master: <a id="plLink" target="_blank" href="#"></a></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Profile</th>
+          <th>Resolution</th>
+          <th>Bitrate</th>
+          <th>VMAF (mean/min)</th>
+          <th>XPSNR (Y/min)</th>
+        </tr>
+      </thead>
+      <tbody id="metricsTbody"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    let hls = null;
+
+    function startUpload() {
+      const file = $("fileInput").files[0];
+      if (!file) return alert("Select a video");
+      $("btnUpload").disabled = true;
+      $("uploadWrap").classList.remove("hidden");
+      $("procBox").classList.add("hidden");
+      $("resultBox").classList.add("hidden");
+
+      const qc = String($("chkQC").checked);
+      const upload = new tus.Upload(file, {
+        endpoint: "/tus",
+        retryDelays: [0, 1000, 3000, 5000],
+        chunkSize: 1024 * 1024,
+        metadata: {
+          filename: file.name,
+          filetype: file.type || "video/mp4",
+          segment: $("segDur").value || "4",
+          vmaf: qc,
+          xpsnr: qc,
+          hw: String($("chkHW").checked),
+        },
+        onError: err => { $("uploadStatus").textContent = "Error: " + err; $("btnUpload").disabled = false; },
+        onProgress: (sent, total) => {
+          const pct = (sent / total * 100).toFixed(1);
+          $("uploadBar").style.width = pct + "%";
+          $("uploadStatus").textContent = `${pct}% (${(sent / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB)`;
+        },
+        onSuccess: () => poll(upload.url.split("/").pop()),
+      });
+      upload.start();
+    }
+
+    async function poll(id) {
+      $("procBox").classList.remove("hidden");
+      while (true) {
+        const res = await fetch(`/jobs/${id}`).catch(() => null);
+        if (res && res.ok) {
+          const job = await res.json();
+          const p = job.progress || {};
+          $("procStep").textContent = `${job.state} ${p.pct || 0}%`;
+          $("procBar").style.width = (p.pct || 0) + "%";
+          $("procMsg").textContent = p.step || job.state;
+          if (job.state === "completed") return done(job.result);
+          if (job.state === "failed") { $("procMsg").textContent = "Failed: " + job.error; break; }
+        }
+        await sleep(1000);
+      }
+      $("btnUpload").disabled = false;
+    }
+
+    function done(r) {
+      $("btnUpload").disabled = false;
+      $("resultBox").classList.remove("hidden");
+      $("encoderInfo").textContent = r.encoder;
+      $("plLink").href = $("plLink").textContent = r.playlist;
+
+      const video = $("videoPlayer");
+      if (hls) hls.destroy();
+      if (Hls.isSupported()) { hls = new Hls(); hls.loadSource(r.playlist); hls.attachMedia(video); }
+      else video.src = r.playlist;
+
+      $("metricsTbody").innerHTML = r.renditions.map(q => {
+        const v = q.vmaf || {}, x = q.xpsnr || {};
+        return `<tr><td><strong>${q.name}</strong></td><td>${q.size}</td><td>${q.kbps}k</td>
+          <td>${v.mean != null ? `${v.mean} / ${v.min}` : "-"}</td>
+          <td>${x.y != null ? `${x.y} / ${x.min} dB` : "-"}</td></tr>`;
+      }).join("");
+    }
+  </script>
+</body>
+</html>
