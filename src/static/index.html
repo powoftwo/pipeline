@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Pipeline</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 680px; margin: 32px auto; padding: 0 16px; color: #111; line-height: 1.4; }
+    h1 { font-size: 20px; margin-bottom: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    input, button { font-size: 13px; padding: 6px 10px; }
+    button { cursor: pointer; background: #0f172a; color: #fff; border: 1px solid #0f172a; border-radius: 4px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .bar { width: 100%; background: #e2e8f0; height: 12px; border-radius: 3px; overflow: hidden; margin: 6px 0; }
+    .bar-fill { background: #2563eb; height: 100%; width: 0%; transition: width 0.2s; }
+    .box { border: 1px solid #cbd5e1; border-radius: 4px; padding: 12px; margin-top: 16px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; }
+    th { background: #f8fafc; }
+    video { width: 100%; max-height: 360px; background: #000; border-radius: 4px; margin-top: 10px; }
+    .hidden { display: none; }
+    .muted { color: #64748b; font-size: 12px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/tus-js-client@3/dist/tus.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body>
+  <h1>Adaptive HLS Pipeline</h1>
+
+  <div class="box">
+    <div class="row">
+      <input type="file" id="fileInput" accept="video/*">
+      <button id="btnUpload" onclick="startUpload()">Upload (TUS)</button>
+    </div>
+    <div class="row muted">
+      <label>Segment: <input type="number" id="segDur" value="4" min="1" max="10" style="width:45px">s</label>
+      <label><input type="checkbox" id="chkQC" checked> Compute VMAF & XPSNR</label>
+    </div>
+    <div id="uploadWrap" class="hidden">
+      <div class="muted" id="uploadStatus">Upload: 0%</div>
+      <div class="bar"><div id="uploadBar" class="bar-fill"></div></div>
+    </div>
+  </div>
+
+  <div id="procBox" class="box hidden">
+    <div class="row" style="justify-content:space-between">
+      <strong>Processing (BullMQ)</strong>
+      <span id="procStep" class="muted">queued</span>
+    </div>
+    <div class="bar"><div id="procBar" class="bar-fill" style="background:#059669"></div></div>
+    <div id="procMsg" class="muted">Waiting for worker...</div>
+  </div>
+
+  <div id="resultBox" class="box hidden">
+    <strong>Playback & Quality Report</strong>
+    <video id="videoPlayer" controls playsinline></video>
+    <div class="muted" style="margin-top:6px;">Master: <a id="plLink" target="_blank" href="#"></a></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Profile</th>
+          <th>Resolution</th>
+          <th>Bitrate</th>
+          <th>VMAF (mean/min)</th>
+          <th>XPSNR (Y/min)</th>
+        </tr>
+      </thead>
+      <tbody id="metricsTbody"></tbody>
+    </table>
+  </div>
+
+  <script>
+    let hlsInstance = null;
+
+    function startUpload() {
+      const fileInput = document.getElementById("fileInput");
+      const file = fileInput.files[0];
+      if (!file) {
+        alert("Select video file first");
+        return;
+      }
+
+      const btn = document.getElementById("btnUpload");
+      btn.disabled = true;
+      document.getElementById("uploadWrap").classList.remove("hidden");
+      document.getElementById("procBox").classList.add("hidden");
+      document.getElementById("resultBox").classList.add("hidden");
+
+      const segDur = document.getElementById("segDur").value || "4";
+      const chkQC = document.getElementById("chkQC").checked ? "true" : "false";
+
+      const upload = new tus.Upload(file, {
+        endpoint: "/api/v1/tus",
+        retryDelays: [0, 1000, 3000, 5000],
+        chunkSize: 1024 * 1024,
+        metadata: {
+          filename: file.name,
+          filetype: file.type || "video/mp4",
+          segment_duration: segDur,
+          compute_quality_metrics: chkQC,
+          compute_vmaf: chkQC,
+          compute_xpsnr: chkQC,
+          auto_process: "true"
+        },
+        onError: (err) => {
+          document.getElementById("uploadStatus").textContent = "Upload error: " + err;
+          btn.disabled = false;
+        },
+        onProgress: (bytesSent, bytesTotal) => {
+          const pct = ((bytesSent / bytesTotal) * 100).toFixed(1);
+          document.getElementById("uploadBar").style.width = pct + "%";
+          document.getElementById("uploadStatus").textContent = `Upload: ${pct}% (${(bytesSent/1048576).toFixed(1)} / ${(bytesTotal/1048576).toFixed(1)} MB)`;
+        },
+        onSuccess: () => {
+          document.getElementById("uploadStatus").textContent = "Upload complete. Triggering pipeline...";
+          const uid = upload.url.split("/").pop();
+          pollTusInfo(uid);
+        }
+      });
+
+      upload.start();
+    }
+
+    async function pollTusInfo(uid) {
+      document.getElementById("procBox").classList.remove("hidden");
+      for (let i = 0; i < 20; i++) {
+        try {
+          const res = await fetch(`/api/v1/tus/${uid}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.job_id) {
+              pollJob(data.job_id);
+              return;
+            }
+          }
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      document.getElementById("procMsg").textContent = "Timeout waiting for job ID";
+    }
+
+    async function pollJob(jobId) {
+      const stepEl = document.getElementById("procStep");
+      const barEl = document.getElementById("procBar");
+      const msgEl = document.getElementById("procMsg");
+
+      while (true) {
+        try {
+          const res = await fetch(`/api/v1/jobs/${jobId}`);
+          if (!res.ok) throw new Error("Status error: " + res.status);
+          const data = await res.json();
+          const prog = data.progress || {};
+          const pct = prog.percent || 0;
+          const step = prog.step || data.state;
+
+          stepEl.textContent = `${data.state} (${pct}%)`;
+          barEl.style.width = pct + "%";
+          msgEl.textContent = `Step: ${step}`;
+
+          if (data.state === "completed") {
+            showResult(data.return_value);
+            document.getElementById("btnUpload").disabled = false;
+            break;
+          }
+          if (data.state === "failed") {
+            msgEl.textContent = "Failed: " + (data.failed_reason || "unknown error");
+            document.getElementById("btnUpload").disabled = false;
+            break;
+          }
+        } catch (e) {
+          msgEl.textContent = "Polling error: " + e.message;
+        }
+        await new Promise(r => setTimeout(r, 1200));
+      }
+    }
+
+    function showResult(ret) {
+      if (!ret) return;
+      document.getElementById("resultBox").classList.remove("hidden");
+      const masterUrl = ret.master_playlist_url;
+      const plLink = document.getElementById("plLink");
+      plLink.href = masterUrl;
+      plLink.textContent = masterUrl;
+
+      const video = document.getElementById("videoPlayer");
+      if (hlsInstance) {
+        hlsInstance.destroy();
+        hlsInstance = null;
+      }
+
+      if (Hls.isSupported()) {
+        hlsInstance = new Hls();
+        hlsInstance.loadSource(masterUrl);
+        hlsInstance.attachMedia(video);
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = masterUrl;
+      }
+
+      const tbody = document.getElementById("metricsTbody");
+      tbody.innerHTML = "";
+      const qreport = (ret.quality_report && ret.quality_report.renditions) || {};
+
+      (ret.renditions || []).forEach(r => {
+        const q = (qreport[r.name] && qreport[r.name].metrics) || {};
+        const vmaf = q.vmaf || {};
+        const xpsnr = q.xpsnr || {};
+
+        const vmafText = vmaf.mean != null ? `${vmaf.mean} / ${vmaf.min}` : "-";
+        const xpsnrText = xpsnr.y_db != null ? `${xpsnr.y_db} / ${xpsnr.minimum_db} dB` : "-";
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><strong>${r.name}</strong></td>
+          <td>${r.resolution}</td>
+          <td>${r.bitrate_k}k</td>
+          <td>${vmafText}</td>
+          <td>${xpsnrText}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+  </script>
+</body>
+</html>

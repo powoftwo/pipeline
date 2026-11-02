@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from src.api.routes import router as api_router
 from src.api.tus import router as tus_router
@@ -42,8 +44,14 @@ app.include_router(api_router)
 app.include_router(tus_router)
 
 
-@app.get("/", tags=["General"])
-async def root():
+@app.get("/", response_class=HTMLResponse, tags=["UI"])
+async def index():
+    html_path = Path(__file__).parent.parent / "static" / "index.html"
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api", tags=["General"])
+async def api_info():
     return {
         "service": "Video Processing Pipeline",
         "docs": "/docs",
