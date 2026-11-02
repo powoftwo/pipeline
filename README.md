@@ -27,7 +27,8 @@ docker compose up -d
 | BullStudio | http://localhost:4000 |
 | RustFS | http://localhost:9001 (`admin` / `adminpassword`) |
 
-Демо: `python scripts/demo.py [--tus]`
+Демо: `python scripts/demo.py --tus`
+Демо HW: `python scripts/demo.py --tus --hw`
 
 ## API
 
