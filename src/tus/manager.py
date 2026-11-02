@@ -133,6 +133,7 @@ class TusManager:
                 "compute_quality_metrics": upload.metadata.get("compute_quality_metrics", "true").lower() in ("true", "1", "yes"),
                 "compute_vmaf": upload.metadata.get("compute_vmaf", "true").lower() in ("true", "1", "yes"),
                 "compute_xpsnr": upload.metadata.get("compute_xpsnr", "true").lower() in ("true", "1", "yes"),
+                "hw_accel": upload.metadata.get("hw_accel", "false").lower() in ("true", "1", "yes"),
             }
             try:
                 job = await enqueue_video_job(s3_key=key, bucket=bucket, options=opts, job_id=uid)

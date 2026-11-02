@@ -35,6 +35,7 @@
     <div class="row muted">
       <label>Segment: <input type="number" id="segDur" value="4" min="1" max="10" style="width:45px">s</label>
       <label><input type="checkbox" id="chkQC" checked> Compute VMAF & XPSNR</label>
+      <label><input type="checkbox" id="chkHW"> HW acceleration</label>
     </div>
     <div id="uploadWrap" class="hidden">
       <div class="muted" id="uploadStatus">Upload: 0%</div>
@@ -52,7 +53,10 @@
   </div>
 
   <div id="resultBox" class="box hidden">
-    <strong>Playback & Quality Report</strong>
+    <div class="row" style="justify-content:space-between; margin-bottom:4px;">
+      <strong>Playback & Quality Report</strong>
+      <span id="encoderInfo" class="muted"></span>
+    </div>
     <video id="videoPlayer" controls playsinline></video>
     <div class="muted" style="margin-top:6px;">Master: <a id="plLink" target="_blank" href="#"></a></div>
     <table>
@@ -88,6 +92,7 @@
 
       const segDur = document.getElementById("segDur").value || "4";
       const chkQC = document.getElementById("chkQC").checked ? "true" : "false";
+      const chkHW = document.getElementById("chkHW").checked ? "true" : "false";
 
       const upload = new tus.Upload(file, {
         endpoint: "/api/v1/tus",
@@ -100,6 +105,7 @@
           compute_quality_metrics: chkQC,
           compute_vmaf: chkQC,
           compute_xpsnr: chkQC,
+          hw_accel: chkHW,
           auto_process: "true"
         },
         onError: (err) => {
@@ -177,6 +183,12 @@
     function showResult(ret) {
       if (!ret) return;
       document.getElementById("resultBox").classList.remove("hidden");
+      const encInfo = document.getElementById("encoderInfo");
+      if (ret.encoder) {
+        encInfo.textContent = `Encoder: ${ret.encoder} (HW: ${ret.hw_accel ? "on" : "off"})`;
+      } else {
+        encInfo.textContent = "";
+      }
       const masterUrl = ret.master_playlist_url;
       const plLink = document.getElementById("plLink");
       plLink.href = masterUrl;

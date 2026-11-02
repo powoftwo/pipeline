@@ -1,7 +1,8 @@
 import asyncio
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from src.ffmpeg.probe import VideoMetadata, probe_video
 
@@ -30,12 +31,43 @@ def select_profiles(metadata: VideoMetadata) -> List[RenditionProfile]:
     return sel
 
 
+def detect_hw_encoder() -> Optional[str]:
+    try:
+        proc = subprocess.run(["ffmpeg", "-encoders"], capture_output=True, text=True, check=False)
+        encoders = proc.stdout
+        for cand in ["h264_videotoolbox", "h264_nvenc", "h264_vaapi", "h264_qsv"]:
+            if cand in encoders:
+                return cand
+    except Exception:
+        pass
+    return None
+
+
+def get_encoder_args(p: RenditionProfile, idx: int, gop_size: int, encoder: str) -> List[str]:
+    b_k = f"{p.video_bitrate_k}k"
+    max_k = f"{int(p.video_bitrate_k * 1.07)}k"
+    buf_k = f"{int(p.video_bitrate_k * 1.5)}k"
+
+    if encoder == "h264_videotoolbox":
+        return [f"-c:v:{idx}", "h264_videotoolbox", f"-b:v:{idx}", b_k, f"-maxrate:v:{idx}", max_k, f"-bufsize:v:{idx}", buf_k, f"-g:v:{idx}", str(gop_size)]
+    if encoder == "h264_nvenc":
+        return [f"-c:v:{idx}", "h264_nvenc", "-preset", "p4", f"-b:v:{idx}", b_k, f"-maxrate:v:{idx}", max_k, f"-bufsize:v:{idx}", buf_k, f"-g:v:{idx}", str(gop_size)]
+    if encoder in ("h264_vaapi", "h264_qsv"):
+        return [f"-c:v:{idx}", encoder, f"-b:v:{idx}", b_k, f"-g:v:{idx}", str(gop_size)]
+
+    return [
+        f"-c:v:{idx}", "libx264", f"-b:v:{idx}", b_k, f"-maxrate:v:{idx}", max_k, f"-bufsize:v:{idx}", buf_k,
+        "-preset", "veryfast", f"-g:v:{idx}", str(gop_size), f"-keyint_min:v:{idx}", str(gop_size), f"-sc_threshold:v:{idx}", "0",
+    ]
+
+
 async def generate_adaptive_hls(
     input_path: str | Path,
     output_dir: str | Path,
     segment_duration: int = 4,
     progress_callback: Optional[Callable[[float], None]] = None,
-) -> List[RenditionProfile]:
+    hw_accel: bool = False,
+) -> Tuple[List[RenditionProfile], str]:
     input_path = Path(input_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +75,8 @@ async def generate_adaptive_hls(
     metadata = probe_video(input_path)
     profiles = select_profiles(metadata)
     gop_size = max(1, int(round(metadata.fps * segment_duration)))
+
+    encoder = (detect_hw_encoder() if hw_accel else None) or "libx264"
 
     for idx in range(len(profiles)):
         (output_dir / f"stream_{idx}").mkdir(parents=True, exist_ok=True)
@@ -56,14 +90,8 @@ async def generate_adaptive_hls(
 
     vsm = []
     for i, p in enumerate(profiles):
-        cmd.extend([
-            "-map", f"[v{i}out]", f"-c:v:{i}", "libx264",
-            f"-b:v:{i}", f"{p.video_bitrate_k}k",
-            f"-maxrate:v:{i}", f"{int(p.video_bitrate_k * 1.07)}k",
-            f"-bufsize:v:{i}", f"{int(p.video_bitrate_k * 1.5)}k",
-            "-preset", "veryfast",
-            f"-g:v:{i}", str(gop_size), f"-keyint_min:v:{i}", str(gop_size), f"-sc_threshold:v:{i}", "0",
-        ])
+        cmd.extend(["-map", f"[v{i}out]"])
+        cmd.extend(get_encoder_args(p, i, gop_size, encoder))
         if metadata.audio_codec:
             cmd.extend(["-map", "0:a:0", f"-c:a:{i}", "aac", f"-b:a:{i}", f"{p.audio_bitrate_k}k"])
             vsm.append(f"v:{i},a:{i}")
@@ -97,4 +125,4 @@ async def generate_adaptive_hls(
     if proc.returncode != 0:
         raise RuntimeError(f"HLS failed ({proc.returncode}): {stderr.decode(errors='ignore')}")
 
-    return profiles
+    return profiles, encoder

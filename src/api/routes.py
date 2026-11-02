@@ -25,6 +25,7 @@ async def upload_video_and_process(
     compute_quality_metrics: bool = Form(True),
     compute_vmaf: bool = Form(True),
     compute_xpsnr: bool = Form(True),
+    hw_accel: bool = Form(False),
 ):
     uid = str(uuid.uuid4())
     filename = Path(file.filename or "video.mp4").name
@@ -47,6 +48,7 @@ async def upload_video_and_process(
             "compute_quality_metrics": compute_quality_metrics,
             "compute_vmaf": compute_vmaf,
             "compute_xpsnr": compute_xpsnr,
+            "hw_accel": hw_accel,
         },
         job_id=uid,
     )
@@ -78,6 +80,7 @@ async def create_job_from_s3(payload: JobCreateRequest):
             "compute_quality_metrics": payload.compute_quality_metrics,
             "compute_vmaf": payload.compute_vmaf,
             "compute_xpsnr": payload.compute_xpsnr,
+            "hw_accel": bool(payload.hw_accel),
         },
     )
     return JobStatusResponse(id=str(job.id), name=job.name, state="waiting", progress={"step": "enqueued", "percent": 0})

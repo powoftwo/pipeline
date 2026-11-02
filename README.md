@@ -11,6 +11,7 @@
 - BullMQ + Redis — очередь фоновых задач с распределением нагрузки, повторами и стримингом прогресса.
 - BullStudio (`emirce/bullstudio`) — дашборд мониторинга очередей и задач BullMQ в отдельном контейнере.
 - FFmpeg — генерация адаптивного потока HLS (`master.m3u8`, профили 1080p, 720p, 480p, 360p, сегменты `.ts`) с выравниванием GOP.
+- Аппаратное ускорение (Hardware Acceleration) — автоопределение энкодеров: Apple Silicon/macOS (`h264_videotoolbox`), NVIDIA (`h264_nvenc`), Intel/AMD Linux (`h264_vaapi`), Intel QuickSync (`h264_qsv`), с безопасным фолбэком на `libx264`.
 - Контроль качества:
   - VMAF — расчет через `ffmpeg-quality-metrics`.
   - XPSNR — расчет через фильтр FFmpeg `xpsnr` (каналы Y, U, V).
@@ -151,7 +152,12 @@ const upload = new tus.Upload(file, {
     endpoint: "http://localhost:8000/api/v1/tus",
     retryDelays: [0, 1000, 3000, 5000],
     chunkSize: 5 * 1024 * 1024,
-    metadata: { filename: file.name, filetype: file.type },
+    metadata: {
+        filename: file.name,
+        filetype: file.type,
+        hw_accel: "true",
+        segment_duration: "4"
+    },
     onProgress: (bytesUploaded, bytesTotal) => {
         console.log(`Progress: ${(bytesUploaded / bytesTotal * 100).toFixed(1)}%`);
     },
@@ -168,12 +174,13 @@ upload.start();
 
 ### 1. Загрузка видео
 - `POST /api/v1/jobs/upload` (`multipart/form-data`) — сохраняет в S3 и ставит задачу в BullMQ.
+  Параметры: `file`, `segment_duration` (по умолчанию 4), `hw_accel` (по умолчанию `false`), `compute_quality_metrics` (`true`), `compute_vmaf` (`true`), `compute_xpsnr` (`true`).
 
 ### 2. Presigned URL
 - `POST /api/v1/jobs/presigned` — выдает прямую ссылку загрузки в S3.
 
 ### 3. Задача для существующего ключа в S3
-- `POST /api/v1/jobs` — создание задачи по `s3_key`.
+- `POST /api/v1/jobs` — создание задачи по `s3_key` с опциями (`segment_duration`, `hw_accel`, метрики).
 
 ### 4. Статус и прогресс
 - `GET /api/v1/jobs/{job_id}` — шаг выполнения, процент и результат.

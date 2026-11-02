@@ -9,6 +9,7 @@ class JobCreateRequest(BaseModel):
     compute_quality_metrics: Optional[bool] = True
     compute_vmaf: Optional[bool] = True
     compute_xpsnr: Optional[bool] = True
+    hw_accel: Optional[bool] = False
 
 
 class PresignedUploadRequest(BaseModel):

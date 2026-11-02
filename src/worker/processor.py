@@ -54,6 +54,7 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
         })
 
         seg_dur = options.get("segment_duration", settings.HLS_SEGMENT_TIME)
+        hw_accel = bool(options.get("hw_accel", False))
         loop = asyncio.get_running_loop()
 
         def on_progress(pct: float) -> None:
@@ -63,7 +64,9 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
                 loop,
             )
 
-        profiles = await generate_adaptive_hls(local_source, hls_dir, segment_duration=seg_dur, progress_callback=on_progress)
+        profiles, encoder_used = await generate_adaptive_hls(
+            local_source, hls_dir, segment_duration=seg_dur, progress_callback=on_progress, hw_accel=hw_accel
+        )
         await job.updateProgress({"step": "transcoded", "percent": 60})
 
         quality_report: Dict[str, Any] = {}
@@ -84,7 +87,7 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
         master_key = f"{s3_prefix}/master.m3u8"
         master_url = s3_storage.get_object_url(settings.S3_BUCKET_PROCESSED, master_key)
         await job.updateProgress({"step": "completed", "percent": 100})
-        logger.info(f"[{job_id}] Done: {master_url}")
+        logger.info(f"[{job_id}] Done: {master_url} (encoder: {encoder_used})")
 
         return {
             "job_id": job_id,
@@ -92,6 +95,8 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
             "bucket": settings.S3_BUCKET_PROCESSED,
             "master_playlist_key": master_key,
             "master_playlist_url": master_url,
+            "encoder": encoder_used,
+            "hw_accel": hw_accel,
             "renditions": [{"name": p.name, "resolution": f"{p.width}x{p.height}", "bitrate_k": p.video_bitrate_k} for p in profiles],
             "quality_report": quality_report,
         }
