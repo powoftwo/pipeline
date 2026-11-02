@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+.env
+/tmp
+*.mp4
+*.ts
+*.m3u8
+*.log
