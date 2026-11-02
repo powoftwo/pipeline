@@ -1,6 +1,6 @@
 import uuid
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
@@ -12,7 +12,14 @@ from src.api.schemas import (
     PresignedUploadResponse,
 )
 from src.config import settings
-from src.queue import enqueue_video_job, get_job_status_details
+from src.queue import (
+    cancel_job,
+    delete_job,
+    enqueue_video_job,
+    get_job_by_id,
+    get_job_status_details,
+    list_jobs_details,
+)
 from src.s3 import s3_storage
 
 router = APIRouter(prefix="/api/v1", tags=["Jobs"])
@@ -86,6 +93,31 @@ async def create_job_from_s3(payload: JobCreateRequest):
     return JobStatusResponse(id=str(job.id), name=job.name, state="waiting", progress={"step": "enqueued", "percent": 0})
 
 
+@router.get("/jobs", response_model=List[JobStatusResponse])
+async def list_all_jobs(limit: int = 20):
+    details_list = await list_jobs_details(limit=limit)
+    res = []
+    for d in details_list:
+        ret = d.get("return_value") or {}
+        res.append(
+            JobStatusResponse(
+                id=d["id"],
+                name=d["name"],
+                state=d["state"],
+                progress=d.get("progress"),
+                return_value=ret,
+                failed_reason=d.get("failed_reason"),
+                master_playlist_url=ret.get("master_playlist_url"),
+                quality_report=ret.get("quality_report"),
+                timestamp=d.get("timestamp"),
+                processed_on=d.get("processed_on"),
+                finished_on=d.get("finished_on"),
+                duration_seconds=d.get("duration_seconds"),
+            )
+        )
+    return res
+
+
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(job_id: str):
     details = await get_job_status_details(job_id)
@@ -102,7 +134,26 @@ async def get_job_status(job_id: str):
         failed_reason=details.get("failed_reason"),
         master_playlist_url=ret.get("master_playlist_url"),
         quality_report=ret.get("quality_report"),
+        timestamp=details.get("timestamp"),
+        processed_on=details.get("processed_on"),
+        finished_on=details.get("finished_on"),
+        duration_seconds=details.get("duration_seconds"),
     )
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job_endpoint(job_id: str):
+    job = await get_job_by_id(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found")
+    await cancel_job(job_id)
+    return {"job_id": job_id, "status": "cancelling"}
+
+
+@router.delete("/jobs/{job_id}")
+async def delete_job_endpoint(job_id: str):
+    await delete_job(job_id)
+    return {"job_id": job_id, "status": "deleted"}
 
 
 @router.get("/jobs/{job_id}/playback", response_model=PlaybackResponse)

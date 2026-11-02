@@ -182,8 +182,11 @@ upload.start();
 ### 3. Задача для существующего ключа в S3
 - `POST /api/v1/jobs` — создание задачи по `s3_key` с опциями (`segment_duration`, `hw_accel`, метрики).
 
-### 4. Статус и прогресс
-- `GET /api/v1/jobs/{job_id}` — шаг выполнения, процент и результат.
+### 4. Очередь и статус
+- `GET /api/v1/jobs` — список задач со статусами, таймингами (`duration_seconds`, `processed_on`, `finished_on`) и прогрессом.
+- `GET /api/v1/jobs/{job_id}` — шаг выполнения, процент, время и результат.
+- `POST /api/v1/jobs/{job_id}/cancel` — отмена активной или ожидающей задачи с прерыванием кодирования.
+- `DELETE /api/v1/jobs/{job_id}` — удаление задачи из очереди и хранилища Redis.
 
 ### 5. HLS воспроизведение
 - `GET /api/v1/jobs/{job_id}/playback` — прямая ссылка на `master.m3u8` и Presigned URL.

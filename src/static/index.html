@@ -20,6 +20,15 @@
     video { width: 100%; max-height: 360px; background: #000; border-radius: 4px; margin-top: 10px; }
     .hidden { display: none; }
     .muted { color: #64748b; font-size: 12px; }
+    .btn-sm { font-size: 11px; padding: 2px 6px; }
+    .btn-warn { background: #d97706; border-color: #d97706; color: #fff; }
+    .btn-danger { background: #dc2626; border-color: #dc2626; color: #fff; }
+    .timer { font-variant-numeric: tabular-nums; font-family: monospace; }
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 500; }
+    .badge-waiting { background: #fef3c7; color: #92400e; }
+    .badge-active { background: #dbeafe; color: #1e40af; }
+    .badge-completed { background: #dcfce7; color: #166534; }
+    .badge-failed { background: #fee2e2; color: #991b1b; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/tus-js-client@3/dist/tus.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
@@ -43,18 +52,30 @@
     </div>
   </div>
 
-  <div id="procBox" class="box hidden">
-    <div class="row" style="justify-content:space-between">
-      <strong>Processing (BullMQ)</strong>
-      <span id="procStep" class="muted">queued</span>
+  <div id="queueBox" class="box">
+    <div class="row" style="justify-content:space-between; margin-bottom:4px;">
+      <strong>Jobs Queue</strong>
+      <span id="queueCount" class="muted">0 jobs</span>
     </div>
-    <div class="bar"><div id="procBar" class="bar-fill" style="background:#059669"></div></div>
-    <div id="procMsg" class="muted">Waiting for worker...</div>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Time</th>
+          <th>Progress</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="queueTbody">
+        <tr><td colspan="5" class="muted" style="text-align:center;">No jobs yet</td></tr>
+      </tbody>
+    </table>
   </div>
 
   <div id="resultBox" class="box hidden">
     <div class="row" style="justify-content:space-between; margin-bottom:4px;">
-      <strong>Playback & Quality Report</strong>
+      <strong id="resultTitle">Playback & Quality Report</strong>
       <span id="encoderInfo" class="muted"></span>
     </div>
     <video id="videoPlayer" controls playsinline></video>
@@ -75,6 +96,147 @@
 
   <script>
     let hlsInstance = null;
+    let pollTimer = null;
+    let activeJobIds = new Set();
+    let currentJobId = null;
+
+    function formatDuration(sec) {
+      if (sec == null || isNaN(sec)) return "-";
+      if (sec < 60) return `${Number(sec).toFixed(1)}s`;
+      const m = Math.floor(sec / 60);
+      const s = Math.round(sec % 60);
+      return `${m}m ${s}s`;
+    }
+
+    function formatTimer(sec) {
+      sec = Math.max(0, Math.floor(sec));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    }
+
+    function updateLiveTimers() {
+      const now = Date.now();
+      document.querySelectorAll(".timer[data-start]").forEach(el => {
+        const start = parseInt(el.getAttribute("data-start"), 10);
+        if (start > 0) {
+          el.textContent = formatTimer((now - start) / 1000);
+        }
+      });
+    }
+
+    setInterval(updateLiveTimers, 1000);
+
+    function schedulePoll(delay = 2000) {
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(refreshJobs, delay);
+    }
+
+    async function refreshJobs() {
+      try {
+        const res = await fetch("/api/v1/jobs?limit=20");
+        if (res.ok) {
+          const jobs = await res.json();
+          renderQueue(jobs);
+        }
+      } catch (_) {}
+      const hasActive = activeJobIds.size > 0;
+      schedulePoll(hasActive ? 1500 : 4000);
+    }
+
+    function renderQueue(jobs) {
+      document.getElementById("queueCount").textContent = `${jobs.length} jobs`;
+      activeJobIds.clear();
+      const tbody = document.getElementById("queueTbody");
+
+      if (!jobs || jobs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center;">No jobs yet</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = "";
+      jobs.forEach(j => {
+        if (j.state === "active" || j.state === "waiting") {
+          activeJobIds.add(j.id);
+        }
+
+        let timeHtml = "-";
+        if (j.state === "completed") {
+          timeHtml = formatDuration(j.duration_seconds);
+        } else if (j.state === "active") {
+          const start = j.processed_on || j.timestamp || Date.now();
+          const elapsed = (Date.now() - start) / 1000;
+          timeHtml = `<span class="timer" data-start="${start}">${formatTimer(elapsed)}</span>`;
+        } else if (j.state === "waiting") {
+          const start = j.timestamp || Date.now();
+          const elapsed = (Date.now() - start) / 1000;
+          timeHtml = `<span class="timer muted" data-start="${start}">${formatTimer(elapsed)}</span>`;
+        } else if (j.state === "failed") {
+          timeHtml = j.duration_seconds ? formatDuration(j.duration_seconds) : "-";
+        }
+
+        let progressHtml = "-";
+        if (j.state === "active") {
+          const p = j.progress || {};
+          const pct = p.percent || 0;
+          const step = p.step || "processing";
+          progressHtml = `
+            <div class="bar" style="margin:2px 0; height:8px;"><div class="bar-fill" style="width:${pct}%; background:#059669;"></div></div>
+            <span class="muted">${step} (${pct}%)</span>
+          `;
+        } else if (j.state === "waiting") {
+          progressHtml = '<span class="muted">In queue...</span>';
+        } else if (j.state === "completed") {
+          progressHtml = '<span class="muted">Done (100%)</span>';
+        } else if (j.state === "failed") {
+          progressHtml = `<span class="muted" style="color:#b91c1c;">${j.failed_reason || "Error"}</span>`;
+        }
+
+        let actions = [];
+        if (j.state === "completed") {
+          actions.push(`<button class="btn-sm" onclick="showJob('${j.id}')">Play & Report</button>`);
+          actions.push(`<button class="btn-sm btn-danger" onclick="deleteJob('${j.id}')">Del</button>`);
+        } else if (j.state === "active") {
+          actions.push(`<button class="btn-sm btn-warn" onclick="cancelJob('${j.id}')">Cancel</button>`);
+        } else if (j.state === "waiting") {
+          actions.push(`<button class="btn-sm btn-warn" onclick="cancelJob('${j.id}')">Cancel</button>`);
+          actions.push(`<button class="btn-sm btn-danger" onclick="deleteJob('${j.id}')">Del</button>`);
+        } else if (j.state === "failed") {
+          actions.push(`<button class="btn-sm btn-danger" onclick="deleteJob('${j.id}')">Del</button>`);
+        }
+        const actionHtml = actions.length > 0 ? actions.join(" ") : "-";
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${j.id.slice(0, 8)}</code></td>
+          <td><span class="badge badge-${j.state}">${j.state}</span></td>
+          <td>${timeHtml}</td>
+          <td>${progressHtml}</td>
+          <td style="white-space:nowrap;">${actionHtml}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function cancelJob(jobId) {
+      if (!confirm(`Cancel job ${jobId.slice(0, 8)}?`)) return;
+      try {
+        await fetch(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" });
+        refreshJobs();
+      } catch (_) {}
+    }
+
+    async function deleteJob(jobId) {
+      if (!confirm(`Delete job ${jobId.slice(0, 8)}?`)) return;
+      try {
+        await fetch(`/api/v1/jobs/${jobId}`, { method: "DELETE" });
+        if (currentJobId === jobId) {
+          document.getElementById("resultBox").classList.add("hidden");
+          currentJobId = null;
+        }
+        refreshJobs();
+      } catch (_) {}
+    }
 
     function startUpload() {
       const fileInput = document.getElementById("fileInput");
@@ -87,8 +249,6 @@
       const btn = document.getElementById("btnUpload");
       btn.disabled = true;
       document.getElementById("uploadWrap").classList.remove("hidden");
-      document.getElementById("procBox").classList.add("hidden");
-      document.getElementById("resultBox").classList.add("hidden");
 
       const segDur = document.getElementById("segDur").value || "4";
       const chkQC = document.getElementById("chkQC").checked ? "true" : "false";
@@ -118,77 +278,60 @@
           document.getElementById("uploadStatus").textContent = `Upload: ${pct}% (${(bytesSent/1048576).toFixed(1)} / ${(bytesTotal/1048576).toFixed(1)} MB)`;
         },
         onSuccess: () => {
-          document.getElementById("uploadStatus").textContent = "Upload complete. Triggering pipeline...";
+          document.getElementById("uploadStatus").textContent = "Upload complete. Enqueued in BullMQ.";
           const uid = upload.url.split("/").pop();
-          pollTusInfo(uid);
+          pollTusJobId(uid);
         }
       });
 
       upload.start();
     }
 
-    async function pollTusInfo(uid) {
-      document.getElementById("procBox").classList.remove("hidden");
+    async function pollTusJobId(uid) {
       for (let i = 0; i < 20; i++) {
         try {
           const res = await fetch(`/api/v1/tus/${uid}`);
           if (res.ok) {
             const data = await res.json();
             if (data.job_id) {
-              pollJob(data.job_id);
-              return;
+              break;
             }
           }
         } catch (_) {}
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 600));
       }
-      document.getElementById("procMsg").textContent = "Timeout waiting for job ID";
+      document.getElementById("btnUpload").disabled = false;
+      document.getElementById("fileInput").value = "";
+      refreshJobs();
+      setTimeout(() => {
+        document.getElementById("uploadWrap").classList.add("hidden");
+      }, 2000);
     }
 
-    async function pollJob(jobId) {
-      const stepEl = document.getElementById("procStep");
-      const barEl = document.getElementById("procBar");
-      const msgEl = document.getElementById("procMsg");
-
-      while (true) {
-        try {
-          const res = await fetch(`/api/v1/jobs/${jobId}`);
-          if (!res.ok) throw new Error("Status error: " + res.status);
-          const data = await res.json();
-          const prog = data.progress || {};
-          const pct = prog.percent || 0;
-          const step = prog.step || data.state;
-
-          stepEl.textContent = `${data.state} (${pct}%)`;
-          barEl.style.width = pct + "%";
-          msgEl.textContent = `Step: ${step}`;
-
-          if (data.state === "completed") {
-            showResult(data.return_value);
-            document.getElementById("btnUpload").disabled = false;
-            break;
-          }
-          if (data.state === "failed") {
-            msgEl.textContent = "Failed: " + (data.failed_reason || "unknown error");
-            document.getElementById("btnUpload").disabled = false;
-            break;
-          }
-        } catch (e) {
-          msgEl.textContent = "Polling error: " + e.message;
-        }
-        await new Promise(r => setTimeout(r, 1200));
-      }
+    async function showJob(jobId) {
+      currentJobId = jobId;
+      try {
+        const res = await fetch(`/api/v1/jobs/${jobId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        showResult(data.return_value, jobId);
+        document.getElementById("resultBox").scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (_) {}
     }
 
-    function showResult(ret) {
+    function showResult(ret, jobId) {
       if (!ret) return;
       document.getElementById("resultBox").classList.remove("hidden");
+      document.getElementById("resultTitle").textContent = `Playback: ${jobId ? jobId.slice(0, 8) : ""}`;
       const encInfo = document.getElementById("encoderInfo");
+      let infoParts = [];
       if (ret.encoder) {
-        encInfo.textContent = `Encoder: ${ret.encoder} (HW: ${ret.hw_accel ? "on" : "off"})`;
-      } else {
-        encInfo.textContent = "";
+        infoParts.push(`Encoder: ${ret.encoder} (HW: ${ret.hw_accel ? "on" : "off"})`);
       }
+      if (ret.duration_seconds != null) {
+        infoParts.push(`Time: ${formatDuration(ret.duration_seconds)}`);
+      }
+      encInfo.textContent = infoParts.join(" | ");
       const masterUrl = ret.master_playlist_url;
       const plLink = document.getElementById("plLink");
       plLink.href = masterUrl;
@@ -231,6 +374,8 @@
         tbody.appendChild(tr);
       });
     }
+
+    window.addEventListener("DOMContentLoaded", refreshJobs);
   </script>
 </body>
 </html>

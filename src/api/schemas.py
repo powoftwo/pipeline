@@ -32,6 +32,10 @@ class JobStatusResponse(BaseModel):
     failed_reason: Optional[str] = None
     master_playlist_url: Optional[str] = None
     quality_report: Optional[Dict[str, Any]] = None
+    timestamp: Optional[int] = None
+    processed_on: Optional[int] = None
+    finished_on: Optional[int] = None
+    duration_seconds: Optional[float] = None
 
 
 class PlaybackResponse(BaseModel):

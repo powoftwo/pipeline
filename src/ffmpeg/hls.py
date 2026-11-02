@@ -2,7 +2,7 @@ import asyncio
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, List, Optional, Tuple
 
 from src.ffmpeg.probe import VideoMetadata, probe_video
 
@@ -67,6 +67,7 @@ async def generate_adaptive_hls(
     segment_duration: int = 4,
     progress_callback: Optional[Callable[[float], None]] = None,
     hw_accel: bool = False,
+    is_cancelled: Optional[Callable[[], Coroutine[Any, Any, bool]]] = None,
 ) -> Tuple[List[RenditionProfile], str]:
     input_path = Path(input_path)
     output_dir = Path(output_dir)
@@ -112,6 +113,14 @@ async def generate_adaptive_hls(
     total_us = metadata.duration_seconds * 1_000_000 if metadata.duration_seconds > 0 else 1
 
     while True:
+        if is_cancelled and await is_cancelled():
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise RuntimeError("Cancelled by user")
+
         line = await proc.stdout.readline()
         if not line:
             break
