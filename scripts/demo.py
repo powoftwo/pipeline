@@ -13,18 +13,32 @@ API_BASE_URL = "http://localhost:8000"
 TUS_ENDPOINT = f"{API_BASE_URL}/api/v1/tus"
 
 
-def generate_sample_video(output_path: Path, duration: int = 4) -> None:
+def generate_sample_video(output_path: Path, duration: int = 60) -> None:
     """Generate synthetic MP4 video."""
     print(f"Generating {duration}s test video at {output_path}...")
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"testsrc=duration={duration}:size=1280x720:rate=25",
+        "-f", "lavfi", "-i", f"testsrc=duration={duration}:size=1920x1080:rate=25",
         "-f", "lavfi", "-i", f"sine=frequency=1000:duration={duration}",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "3000k",
         "-c:a", "aac", "-b:a", "128k",
         str(output_path),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def get_video_duration(video_path: Path) -> Optional[float]:
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return float(res.stdout.strip())
+    except Exception:
+        return None
 
 
 def format_quality_table(qreport: dict) -> Optional[str]:
@@ -105,6 +119,13 @@ def main():
         help="Path to input video file (optional; defaults to demo.mp4 next to script)",
     )
     parser.add_argument(
+        "-t",
+        "--duration",
+        type=int,
+        default=60,
+        help="Duration of generated video in seconds (default: 60)",
+    )
+    parser.add_argument(
         "--hw",
         action="store_true",
         default=False,
@@ -130,7 +151,7 @@ def main():
 
     print("TUS resumable upload demo client")
     print(
-        f"Config: hw={args.hw}, vmaf={compute_vmaf}, xpsnr={compute_xpsnr}"
+        f"Config: duration={args.duration}s, hw={args.hw}, vmaf={compute_vmaf}, xpsnr={compute_xpsnr}"
     )
 
     if args.input_file:
@@ -141,10 +162,11 @@ def main():
         print(f"Using input video: {video_path}")
     else:
         video_path = Path(__file__).resolve().parent / "demo.mp4"
-        if video_path.is_file():
-            print(f"Using existing demo video: {video_path}")
+        dur = get_video_duration(video_path) if video_path.is_file() else None
+        if dur is not None and abs(dur - args.duration) < 1.0:
+            print(f"Using existing demo video: {video_path} ({round(dur)}s)")
         else:
-            generate_sample_video(video_path, duration=4)
+            generate_sample_video(video_path, duration=args.duration)
 
     try:
         health_resp = httpx.get(f"{API_BASE_URL}/health", timeout=5.0)
