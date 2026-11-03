@@ -75,7 +75,7 @@ pipeline/
 │       ├── tus.py
 │       └── schemas.py
 └── scripts/
-    └── demo_tus_client.py
+    └── demo.py
 ```
 
 ---
@@ -102,7 +102,11 @@ docker-compose up -d
 ## Запуск демо-скрипта (TUS-загрузка)
 
 ```bash
-.venv/bin/python -m scripts.demo_tus_client
+# С генерацией/использованием demo.mp4 в папке scripts:
+.venv/bin/python -m scripts.demo
+
+# С указанием своего видеофайла:
+.venv/bin/python -m scripts.demo /path/to/video.mp4
 ```
 
 ---
