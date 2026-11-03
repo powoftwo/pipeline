@@ -57,13 +57,11 @@ pipeline/
 │   ├── config.py
 │   ├── s3.py
 │   ├── queue.py
+│   ├── demo_utils.py
 │   ├── tus/
 │   ├── ffmpeg/
 │   ├── worker/
 │   └── api/
-├── scripts/
-│   ├── demo.py
-│   └── demo_utils.py
 └── samples/
 ```
 
@@ -91,7 +89,7 @@ docker compose up -d
 ```
 
 ### Флаги:
-- `[input_file]` — путь к видеофайлу (по умолчанию генерируется `demo.mp4`).
+- `[input_file]` — путь к видеофайлу (по умолчанию генерируется `samples/demo.mp4`).
 - `-t, --duration` — длительность в секундах (нарезка входного файла или длительность `demo.mp4`, по умолчанию 60).
 - `--hw` — аппаратное ускорение.
 - `--vmaf` — расчет VMAF.

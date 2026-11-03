@@ -1,8 +1,20 @@
 import argparse
+import mimetypes
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
+
+import httpx
+from tqdm import tqdm
+from tusclient import client
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SAMPLES_DIR = PROJECT_ROOT / "samples"
+
+API_BASE_URL = "http://localhost:8000"
+TUS_ENDPOINT = f"{API_BASE_URL}/api/v1/tus"
 
 
 def parse_args() -> argparse.Namespace:
@@ -12,7 +24,7 @@ def parse_args() -> argparse.Namespace:
         "input_file",
         nargs="?",
         default=None,
-        help="Path to input video file (optional; defaults to demo.mp4 next to script)",
+        help="Path to input video file (optional; defaults to samples/demo.mp4)",
     )
     parser.add_argument(
         "-t",
@@ -39,7 +51,11 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Enable XPSNR quality calculation",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    dur_label = f"{args.duration}s" if args.duration else ("60s (default)" if not args.input_file else "full")
+    print("TUS resumable upload demo client")
+    print(f"Config: duration={dur_label}, hw={args.hw}, vmaf={args.vmaf}, xpsnr={args.xpsnr}")
+    return args
 
 
 def get_video_duration(video_path: Path) -> Optional[float]:
@@ -63,6 +79,7 @@ def get_video_duration(video_path: Path) -> Optional[float]:
 
 def generate_sample_video(output_path: Path, duration: int = 60) -> None:
     """Generate synthetic test MP4 video via ffmpeg testsrc."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Generating {duration}s test video at {output_path}...")
     cmd = [
         "ffmpeg",
@@ -92,11 +109,8 @@ def generate_sample_video(output_path: Path, duration: int = 60) -> None:
 
 def trim_video(source_path: Path, duration: int, output_dir: Optional[Path] = None) -> Path:
     """Trim first N seconds of video using stream copy (with fallback to fast re-encode)."""
-    target_dir = output_dir or source_path.parent
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        target_dir = Path("/tmp")
+    target_dir = output_dir or SAMPLES_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     out_name = f"{source_path.stem}_trim_{duration}s{source_path.suffix}"
     out_path = target_dir / out_name
@@ -147,12 +161,15 @@ def trim_video(source_path: Path, duration: int, output_dir: Optional[Path] = No
 def prepare_input_video(
     input_file: Optional[str], duration: Optional[int] = None, default_dir: Optional[Path] = None
 ) -> Path:
-    """Resolve input video path or generate demo.mp4 with specified duration.
+    """Resolve input video path or generate samples/demo.mp4 with specified duration.
 
-    - If input_file is given and duration is given: trims input_file to duration seconds.
+    - If input_file is given and duration is given: trims input_file to duration seconds in samples/.
     - If input_file is given and duration is None: uses full input_file as-is.
-    - If input_file is not given: generates or reuses demo.mp4 with duration (default 60s).
+    - If input_file is not given: generates or reuses samples/demo.mp4 with duration (default 60s).
     """
+    target_dir = default_dir or SAMPLES_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
     if input_file:
         video_path = Path(input_file).expanduser().resolve()
         if not video_path.is_file():
@@ -164,13 +181,12 @@ def prepare_input_video(
             if source_dur is not None and source_dur <= duration:
                 print(f"Using input video: {video_path} ({round(source_dur)}s <= requested {duration}s)")
                 return video_path
-            return trim_video(video_path, duration=duration, output_dir=default_dir)
+            return trim_video(video_path, duration=duration, output_dir=target_dir)
 
         print(f"Using input video: {video_path}")
         return video_path
 
     target_dur = duration or 60
-    target_dir = default_dir or Path(__file__).resolve().parent
     video_path = target_dir / "demo.mp4"
 
     dur = get_video_duration(video_path) if video_path.is_file() else None
@@ -180,6 +196,203 @@ def prepare_input_video(
         generate_sample_video(video_path, duration=target_dur)
 
     return video_path
+
+
+def check_api_health(api_base_url: str = API_BASE_URL, tus_endpoint: str = TUS_ENDPOINT) -> None:
+    """Verify API availability and query TUS protocol capabilities."""
+    try:
+        health_resp = httpx.get(f"{api_base_url}/health", timeout=5.0)
+        health_resp.raise_for_status()
+        print(f"API health: {health_resp.json()}")
+    except Exception as exc:
+        print(f"API error: {exc}")
+        sys.exit(1)
+
+    try:
+        opt_resp = httpx.options(tus_endpoint, timeout=5.0)
+        max_gb = int(opt_resp.headers.get("Tus-Max-Size", 0)) / (1024**3)
+        print(f"TUS options: version={opt_resp.headers.get('Tus-Version')} max_size={max_gb:.1f}GB")
+    except Exception as exc:
+        print(f"TUS options warning: {exc}")
+
+
+def upload_video_via_tus(
+    endpoint: str,
+    video_path: Path,
+    args: argparse.Namespace,
+    chunk_size: int = 2 * 1024 * 1024,
+) -> str:
+    """Upload video chunk-by-chunk via TUS 1.0.0 protocol with live progress bar."""
+    total_size = video_path.stat().st_size
+    filetype = mimetypes.guess_type(video_path.name)[0] or "video/mp4"
+    compute_quality = bool(args.vmaf or args.xpsnr)
+
+    metadata = {
+        "filename": video_path.name,
+        "filetype": filetype,
+        "segment_duration": "2",
+        "compute_quality_metrics": "true" if compute_quality else "false",
+        "compute_vmaf": "true" if args.vmaf else "false",
+        "compute_xpsnr": "true" if args.xpsnr else "false",
+        "hw_accel": "true" if args.hw else "false",
+        "auto_process": "true",
+    }
+
+    tus_c = client.TusClient(endpoint)
+    uploader = tus_c.uploader(
+        str(video_path),
+        chunk_size=chunk_size,
+        metadata=metadata,
+        retries=5,
+        retry_delay=1,
+    )
+
+    max_retries = 10
+    retry_count = 0
+
+    with tqdm(
+        total=total_size,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc="Upload",
+        dynamic_ncols=True,
+    ) as pbar:
+        while uploader.offset < total_size:
+            prev_offset = uploader.offset
+            try:
+                uploader.upload_chunk()
+                delta = uploader.offset - prev_offset
+                if delta > 0:
+                    pbar.update(delta)
+                retry_count = 0
+                time.sleep(0.01)
+            except Exception as exc:
+                retry_count += 1
+                if retry_count > max_retries:
+                    raise
+                pbar.write(f"  [warn] upload interrupted ({exc}), resuming... (retry {retry_count}/{max_retries})")
+                time.sleep(1)
+                try:
+                    new_offset = uploader.get_offset()
+                    delta = new_offset - uploader.offset
+                    if delta > 0:
+                        pbar.update(delta)
+                    uploader.offset = new_offset
+                except Exception:
+                    pass
+
+    upload_id = uploader.url.rstrip("/").split("/")[-1]
+    return upload_id
+
+
+def get_job_id_by_upload(endpoint: str, upload_id: str) -> Optional[str]:
+    """Retrieve BullMQ job ID assigned to completed TUS upload session."""
+    time.sleep(0.5)
+    job_id = None
+    for _ in range(5):
+        try:
+            resp = httpx.get(f"{endpoint}/{upload_id}", timeout=5.0)
+            if resp.status_code == 200:
+                job_id = resp.json().get("job_id")
+                if job_id:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    print(f"BullMQ job: {job_id}")
+    return job_id
+
+
+def poll_job_progress(api_base_url: str, job_id: str) -> Dict[str, Any]:
+    """Poll BullMQ job status with live tqdm progress bar until completion."""
+    status_data: Dict[str, Any] = {}
+
+    with tqdm(
+        total=100.0,
+        desc="Processing",
+        unit="%",
+        dynamic_ncols=True,
+    ) as pbar:
+        pbar.set_postfix(step="queued")
+        last_pct = 0.0
+
+        while True:
+            try:
+                resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}", timeout=5.0)
+                if resp.status_code != 200:
+                    time.sleep(1)
+                    continue
+                status_data = resp.json()
+            except Exception:
+                time.sleep(1)
+                continue
+
+            state = status_data.get("state")
+            progress = status_data.get("progress") or {}
+            step = progress.get("step") if isinstance(progress, dict) else (state or "waiting")
+            percent = float(progress.get("percent", 0) if isinstance(progress, dict) else 0)
+
+            if percent > last_pct:
+                pbar.update(percent - last_pct)
+                last_pct = percent
+            pbar.set_postfix(step=step)
+
+            if state == "completed":
+                if last_pct < 100.0:
+                    pbar.update(100.0 - last_pct)
+                pbar.set_postfix(step="completed")
+                pbar.refresh()
+                break
+
+            if state == "failed":
+                pbar.set_postfix(step="failed")
+                pbar.refresh()
+                print(f"\nJob failed: {status_data.get('failed_reason')}")
+                break
+
+            time.sleep(0.5)
+
+    return status_data
+
+
+def print_job_summary(status_data: Dict[str, Any], api_base_url: str = API_BASE_URL, compute_quality: bool = False) -> None:
+    """Print job completion report, profiles, QC tables and playback URL."""
+    if status_data.get("state") != "completed":
+        return
+
+    print("\nJob completed:")
+    return_val = status_data.get("return_value") or {}
+    print(f"Master playlist: {return_val.get('master_playlist_url')}")
+
+    encoder = return_val.get("encoder")
+    if encoder:
+        hw_used = return_val.get("hw_accel", False)
+        print(f"Encoder: {encoder} (hw_accel={hw_used})")
+
+    timings = return_val.get("stage_timings")
+    if timings:
+        t_parts = [f"transcode: {timings.get('transcode_seconds')}s"]
+        if timings.get("quality_seconds") is not None:
+            t_parts.append(f"quality: {timings.get('quality_seconds')}s")
+        t_parts.append(f"total: {timings.get('total_seconds')}s")
+        print(f"Timings: {', '.join(t_parts)}")
+
+    for r in return_val.get("renditions", []):
+        print(f"  {r['name']}: {r['resolution']} @ {r['bitrate_k']}k")
+
+    qreport = return_val.get("quality_report", {})
+    print_quality_report(qreport, compute_quality=compute_quality)
+
+    job_id = status_data.get("id") or return_val.get("job_id")
+    if job_id:
+        try:
+            pb_resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}/playback", timeout=5.0)
+            if pb_resp.status_code == 200:
+                print(f"Playback URL: {pb_resp.json().get('presigned_playback_url')}")
+        except Exception:
+            pass
 
 
 def format_quality_table(qreport: dict) -> Optional[str]:
