@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 import statistics
 import subprocess
 from pathlib import Path
@@ -46,6 +47,7 @@ def calculate_xpsnr(distorted_path: str | Path, reference_path: str | Path) -> D
         fstr = "[0:v][1:v]xpsnr"
 
     cmd = ["ffmpeg", "-y", "-i", str(distorted_path), "-i", str(reference_path), "-filter_complex", fstr, "-f", "null", "-"]
+    logger.info(f"FFmpeg command (XPSNR): {shlex.join(cmd)}")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         m = re.search(r"XPSNR\s+y:\s*([0-9.]+|inf)\s+u:\s*([0-9.]+|inf)\s+v:\s*([0-9.]+|inf)\s+\(minimum:\s*([0-9.]+|inf)\)", proc.stderr)

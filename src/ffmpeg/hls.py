@@ -1,10 +1,14 @@
 import asyncio
+import logging
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Coroutine, List, Optional, Tuple
 
 from src.ffmpeg.probe import VideoMetadata, probe_video
+
+logger = logging.getLogger("worker")
 
 
 @dataclass
@@ -68,6 +72,7 @@ async def generate_adaptive_hls(
     progress_callback: Optional[Callable[[float], None]] = None,
     hw_accel: bool = False,
     is_cancelled: Optional[Callable[[], Coroutine[Any, Any, bool]]] = None,
+    job_id: Optional[str] = None,
 ) -> Tuple[List[RenditionProfile], str]:
     input_path = Path(input_path)
     output_dir = Path(output_dir)
@@ -108,6 +113,9 @@ async def generate_adaptive_hls(
         "-progress", "pipe:1",
         str(output_dir / "stream_%v" / "index.m3u8"),
     ])
+
+    prefix = f"[{job_id}] " if job_id else ""
+    logger.info(f"{prefix}FFmpeg command: {shlex.join(cmd)}")
 
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     total_us = metadata.duration_seconds * 1_000_000 if metadata.duration_seconds > 0 else 1

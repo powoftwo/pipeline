@@ -158,6 +158,14 @@ def main():
                 hw_used = return_val.get("hw_accel", False)
                 print(f"Encoder: {encoder} (hw_accel={hw_used})")
 
+            timings = return_val.get("stage_timings")
+            if timings:
+                t_parts = [f"transcode: {timings.get('transcode_seconds')}s"]
+                if timings.get("quality_seconds") is not None:
+                    t_parts.append(f"quality: {timings.get('quality_seconds')}s")
+                t_parts.append(f"total: {timings.get('total_seconds')}s")
+                print(f"Timings: {', '.join(t_parts)}")
+
             for r in return_val.get("renditions", []):
                 print(f"  {r['name']}: {r['resolution']} @ {r['bitrate_k']}k")
 

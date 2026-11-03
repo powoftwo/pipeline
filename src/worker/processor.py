@@ -42,14 +42,19 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
     hls_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        t_download_start = time.time()
         source_ext = Path(s3_key).suffix or ".mp4"
         local_source = work_dir / f"src{source_ext}"
         await asyncio.to_thread(s3_storage.download_file, s3_bucket, s3_key, local_source)
         await check_cancelled()
+        download_sec = round(time.time() - t_download_start, 2)
+        logger.info(f"[{job_id}] Stage 'download' finished in {download_sec}s")
         await job.updateProgress({"step": "downloaded", "percent": 10})
 
+        t_probe_start = time.time()
         metadata = await asyncio.to_thread(probe_video, local_source)
-        logger.info(f"[{job_id}] {metadata.width}x{metadata.height} {metadata.fps:.1f}fps {metadata.duration_seconds:.1f}s")
+        probe_sec = round(time.time() - t_probe_start, 2)
+        logger.info(f"[{job_id}] Stage 'probe' finished in {probe_sec}s: {metadata.width}x{metadata.height} {metadata.fps:.1f}fps {metadata.duration_seconds:.1f}s")
         await job.updateProgress({
             "step": "probed",
             "percent": 15,
@@ -73,6 +78,8 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
                 loop,
             )
 
+        t_transcode_start = time.time()
+        logger.info(f"[{job_id}] Stage 'transcoding' started (hw_accel={hw_accel})")
         profiles, encoder_used = await generate_adaptive_hls(
             local_source,
             hls_dir,
@@ -80,14 +87,20 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
             progress_callback=on_progress,
             hw_accel=hw_accel,
             is_cancelled=lambda: is_job_cancelled(job_id),
+            job_id=job_id,
         )
         await check_cancelled()
+        transcode_sec = round(time.time() - t_transcode_start, 2)
+        logger.info(f"[{job_id}] Stage 'transcoding' finished in {transcode_sec}s (encoder: {encoder_used})")
         await job.updateProgress({"step": "transcoded", "percent": 60})
 
         quality_report: Dict[str, Any] = {}
+        quality_sec: Optional[float] = None
         if options.get("compute_quality_metrics", settings.COMPUTE_QUALITY_METRICS):
             await check_cancelled()
             await job.updateProgress({"step": "evaluating_quality", "percent": 65})
+            t_quality_start = time.time()
+            logger.info(f"[{job_id}] Stage 'quality_metrics' started")
             quality_report = await evaluate_hls_stream_quality(
                 reference_path=local_source,
                 hls_dir=hls_dir,
@@ -97,16 +110,36 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
                 vmaf_model=settings.VMAF_MODEL,
             )
             await check_cancelled()
+            quality_sec = round(time.time() - t_quality_start, 2)
+            logger.info(f"[{job_id}] Stage 'quality_metrics' finished in {quality_sec}s")
             await job.updateProgress({"step": "quality_done", "percent": 85})
 
+        t_upload_start = time.time()
         s3_prefix = f"hls/{job_id}"
         await check_cancelled()
         await asyncio.to_thread(s3_storage.upload_directory, hls_dir, settings.S3_BUCKET_PROCESSED, s3_prefix)
         master_key = f"{s3_prefix}/master.m3u8"
         master_url = s3_storage.get_object_url(settings.S3_BUCKET_PROCESSED, master_key)
+        upload_sec = round(time.time() - t_upload_start, 2)
+        logger.info(f"[{job_id}] Stage 'upload' finished in {upload_sec}s")
+
         await job.updateProgress({"step": "completed", "percent": 100})
-        duration_sec = round(time.time() - start_time, 1)
-        logger.info(f"[{job_id}] Done: {master_url} in {duration_sec}s (encoder: {encoder_used})")
+        duration_sec = round(time.time() - start_time, 2)
+
+        summary_timings = [f"transcoding: {transcode_sec}s"]
+        if quality_sec is not None:
+            summary_timings.append(f"quality_metrics: {quality_sec}s")
+        summary_timings.append(f"upload: {upload_sec}s")
+        logger.info(f"[{job_id}] Done: {master_url} in {duration_sec}s ({', '.join(summary_timings)}, encoder: {encoder_used})")
+
+        stage_timings = {
+            "download_seconds": download_sec,
+            "probe_seconds": probe_sec,
+            "transcode_seconds": transcode_sec,
+            "quality_seconds": quality_sec,
+            "upload_seconds": upload_sec,
+            "total_seconds": duration_sec,
+        }
 
         return {
             "job_id": job_id,
@@ -117,9 +150,8 @@ async def process_video_job(job: Job, token: str) -> Dict[str, Any]:
             "encoder": encoder_used,
             "hw_accel": hw_accel,
             "duration_seconds": duration_sec,
+            "stage_timings": stage_timings,
             "renditions": [{"name": p.name, "resolution": f"{p.width}x{p.height}", "bitrate_k": p.video_bitrate_k} for p in profiles],
-            "quality_report": quality_report,
-        }
             "quality_report": quality_report,
         }
     finally:
