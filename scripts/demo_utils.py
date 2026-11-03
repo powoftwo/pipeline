@@ -18,8 +18,8 @@ def parse_args() -> argparse.Namespace:
         "-t",
         "--duration",
         type=int,
-        default=60,
-        help="Duration of generated video in seconds (default: 60)",
+        default=None,
+        help="Duration in seconds (default: 60 for demo.mp4, or trims input_file)",
     )
     parser.add_argument(
         "--hw",
@@ -90,26 +90,94 @@ def generate_sample_video(output_path: Path, duration: int = 60) -> None:
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def trim_video(source_path: Path, duration: int, output_dir: Optional[Path] = None) -> Path:
+    """Trim first N seconds of video using stream copy (with fallback to fast re-encode)."""
+    target_dir = output_dir or source_path.parent
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        target_dir = Path("/tmp")
+
+    out_name = f"{source_path.stem}_trim_{duration}s{source_path.suffix}"
+    out_path = target_dir / out_name
+
+    cached_dur = get_video_duration(out_path) if out_path.is_file() else None
+    if cached_dur is not None and abs(cached_dur - duration) < 1.0:
+        print(f"Using existing trimmed video: {out_path} ({round(cached_dur)}s)")
+        return out_path
+
+    print(f"Trimming {duration}s from {source_path.name} -> {out_name}...")
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        "0",
+        "-i",
+        str(source_path),
+        "-t",
+        str(duration),
+        "-c",
+        "copy",
+        str(out_path),
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        cmd_fallback = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            "0",
+            "-i",
+            str(source_path),
+            "-t",
+            str(duration),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            str(out_path),
+        ]
+        subprocess.run(cmd_fallback, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    return out_path
+
+
 def prepare_input_video(
-    input_file: Optional[str], duration: int = 60, default_dir: Optional[Path] = None
+    input_file: Optional[str], duration: Optional[int] = None, default_dir: Optional[Path] = None
 ) -> Path:
-    """Resolve input video path or generate demo.mp4 with specified duration."""
+    """Resolve input video path or generate demo.mp4 with specified duration.
+
+    - If input_file is given and duration is given: trims input_file to duration seconds.
+    - If input_file is given and duration is None: uses full input_file as-is.
+    - If input_file is not given: generates or reuses demo.mp4 with duration (default 60s).
+    """
     if input_file:
         video_path = Path(input_file).expanduser().resolve()
         if not video_path.is_file():
             print(f"Error: input file '{video_path}' does not exist.")
             sys.exit(1)
+
+        if duration is not None:
+            source_dur = get_video_duration(video_path)
+            if source_dur is not None and source_dur <= duration:
+                print(f"Using input video: {video_path} ({round(source_dur)}s <= requested {duration}s)")
+                return video_path
+            return trim_video(video_path, duration=duration, output_dir=default_dir)
+
         print(f"Using input video: {video_path}")
         return video_path
 
+    target_dur = duration or 60
     target_dir = default_dir or Path(__file__).resolve().parent
     video_path = target_dir / "demo.mp4"
 
     dur = get_video_duration(video_path) if video_path.is_file() else None
-    if dur is not None and abs(dur - duration) < 1.0:
+    if dur is not None and abs(dur - target_dur) < 1.0:
         print(f"Using existing demo video: {video_path} ({round(dur)}s)")
     else:
-        generate_sample_video(video_path, duration=duration)
+        generate_sample_video(video_path, duration=target_dur)
 
     return video_path
 

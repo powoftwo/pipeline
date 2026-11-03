@@ -43,8 +43,16 @@ def poll_job_status(api_base_url: str, job_id: str, compute_quality: bool) -> No
     last_step = None
 
     while True:
-        resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}", timeout=5.0)
-        status_data = resp.json()
+        try:
+            resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}", timeout=5.0)
+            if resp.status_code != 200:
+                time.sleep(1)
+                continue
+            status_data = resp.json()
+        except Exception:
+            time.sleep(1)
+            continue
+
         state = status_data.get("state")
         progress = status_data.get("progress") or {}
         step = progress.get("step") if isinstance(progress, dict) else None
@@ -79,9 +87,12 @@ def poll_job_status(api_base_url: str, job_id: str, compute_quality: bool) -> No
             qreport = return_val.get("quality_report", {})
             print_quality_report(qreport, compute_quality=compute_quality)
 
-            pb_resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}/playback")
-            if pb_resp.status_code == 200:
-                print(f"Playback URL: {pb_resp.json().get('presigned_playback_url')}")
+            try:
+                pb_resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}/playback", timeout=5.0)
+                if pb_resp.status_code == 200:
+                    print(f"Playback URL: {pb_resp.json().get('presigned_playback_url')}")
+            except Exception:
+                pass
             break
 
         if state == "failed":
@@ -98,9 +109,10 @@ def main():
     compute_vmaf = args.vmaf
     compute_xpsnr = args.xpsnr
 
+    dur_label = f"{args.duration}s" if args.duration else ("60s (default)" if not args.input_file else "full")
     print("TUS resumable upload demo client")
     print(
-        f"Config: duration={args.duration}s, hw={args.hw}, vmaf={compute_vmaf}, xpsnr={compute_xpsnr}"
+        f"Config: duration={dur_label}, hw={args.hw}, vmaf={compute_vmaf}, xpsnr={compute_xpsnr}"
     )
 
     video_path = prepare_input_video(
@@ -140,8 +152,18 @@ def main():
     upload_id = upload_url.rstrip("/").split("/")[-1]
 
     time.sleep(0.5)
-    tus_info = httpx.get(f"{TUS_ENDPOINT}/{upload_id}").json()
-    job_id = tus_info.get("job_id")
+    job_id = None
+    for _ in range(5):
+        try:
+            resp = httpx.get(f"{TUS_ENDPOINT}/{upload_id}", timeout=5.0)
+            if resp.status_code == 200:
+                job_id = resp.json().get("job_id")
+                if job_id:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
     print(f"BullMQ job: {job_id}")
 
     if job_id:
