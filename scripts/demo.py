@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import httpx
+from tqdm import tqdm
 from tusclient import client
 
 try:
@@ -20,7 +21,6 @@ def upload_video_via_tus(
 ) -> str:
     """Upload video file chunk-by-chunk via TUS protocol and return upload URL."""
     total_size = video_path.stat().st_size
-    print(f"Starting TUS upload ({total_size} bytes)...")
 
     tus_c = client.TusClient(endpoint)
     uploader = tus_c.uploader(
@@ -31,96 +31,122 @@ def upload_video_via_tus(
         retry_delay=1,
     )
 
-    chunk_idx = 1
     max_retries = 10
     retry_count = 0
 
-    while uploader.offset < total_size:
-        try:
-            uploader.upload_chunk()
-            pct = (uploader.offset / total_size) * 100.0
-            print(f"  chunk {chunk_idx:02d}: {uploader.offset}/{total_size} bytes ({pct:.1f}%)")
-            chunk_idx += 1
-            retry_count = 0
-            time.sleep(0.01)
-        except Exception as exc:
-            retry_count += 1
-            if retry_count > max_retries:
-                raise
-            print(f"  [warn] upload interrupted ({exc}), resuming offset... (retry {retry_count}/{max_retries})")
-            time.sleep(1)
+    with tqdm(
+        total=total_size,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc="Upload",
+        dynamic_ncols=True,
+    ) as pbar:
+        while uploader.offset < total_size:
+            prev_offset = uploader.offset
             try:
-                uploader.offset = uploader.get_offset()
-            except Exception:
-                pass
+                uploader.upload_chunk()
+                delta = uploader.offset - prev_offset
+                if delta > 0:
+                    pbar.update(delta)
+                retry_count = 0
+                time.sleep(0.01)
+            except Exception as exc:
+                retry_count += 1
+                if retry_count > max_retries:
+                    raise
+                pbar.write(f"  [warn] upload interrupted ({exc}), resuming... (retry {retry_count}/{max_retries})")
+                time.sleep(1)
+                try:
+                    new_offset = uploader.get_offset()
+                    delta = new_offset - uploader.offset
+                    if delta > 0:
+                        pbar.update(delta)
+                    uploader.offset = new_offset
+                except Exception:
+                    pass
 
-    print(f"Upload complete: {uploader.url}")
     return uploader.url
 
 
 def poll_job_status(api_base_url: str, job_id: str, compute_quality: bool) -> None:
     """Poll BullMQ job status until completion or failure."""
-    print("Polling progress:")
-    last_step = None
+    status_data = {}
 
-    while True:
-        try:
-            resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}", timeout=5.0)
-            if resp.status_code != 200:
+    with tqdm(
+        total=100.0,
+        desc="Processing",
+        unit="%",
+        dynamic_ncols=True,
+    ) as pbar:
+        pbar.set_postfix(step="queued")
+        last_pct = 0.0
+
+        while True:
+            try:
+                resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}", timeout=5.0)
+                if resp.status_code != 200:
+                    time.sleep(1)
+                    continue
+                status_data = resp.json()
+            except Exception:
                 time.sleep(1)
                 continue
-            status_data = resp.json()
-        except Exception:
-            time.sleep(1)
-            continue
 
-        state = status_data.get("state")
-        progress = status_data.get("progress") or {}
-        step = progress.get("step") if isinstance(progress, dict) else None
-        percent = progress.get("percent", 0) if isinstance(progress, dict) else 0
+            state = status_data.get("state")
+            progress = status_data.get("progress") or {}
+            step = progress.get("step") if isinstance(progress, dict) else (state or "waiting")
+            percent = float(progress.get("percent", 0) if isinstance(progress, dict) else 0)
 
-        step_str = f"[{state}] step={step} ({percent}%)"
-        if step_str != last_step:
-            print(f"  {step_str}")
-            last_step = step_str
+            if percent > last_pct:
+                pbar.update(percent - last_pct)
+                last_pct = percent
+            pbar.set_postfix(step=step)
 
-        if state == "completed":
-            print("Job completed:")
-            return_val = status_data.get("return_value") or {}
-            print(f"Master playlist: {return_val.get('master_playlist_url')}")
+            if state == "completed":
+                if last_pct < 100.0:
+                    pbar.update(100.0 - last_pct)
+                pbar.set_postfix(step="completed")
+                pbar.refresh()
+                break
 
-            encoder = return_val.get("encoder")
-            if encoder:
-                hw_used = return_val.get("hw_accel", False)
-                print(f"Encoder: {encoder} (hw_accel={hw_used})")
+            if state == "failed":
+                pbar.set_postfix(step="failed")
+                pbar.refresh()
+                print(f"\nJob failed: {status_data.get('failed_reason')}")
+                return
 
-            timings = return_val.get("stage_timings")
-            if timings:
-                t_parts = [f"transcode: {timings.get('transcode_seconds')}s"]
-                if timings.get("quality_seconds") is not None:
-                    t_parts.append(f"quality: {timings.get('quality_seconds')}s")
-                t_parts.append(f"total: {timings.get('total_seconds')}s")
-                print(f"Timings: {', '.join(t_parts)}")
+            time.sleep(0.5)
 
-            for r in return_val.get("renditions", []):
-                print(f"  {r['name']}: {r['resolution']} @ {r['bitrate_k']}k")
+    print("\nJob completed:")
+    return_val = status_data.get("return_value") or {}
+    print(f"Master playlist: {return_val.get('master_playlist_url')}")
 
-            qreport = return_val.get("quality_report", {})
-            print_quality_report(qreport, compute_quality=compute_quality)
+    encoder = return_val.get("encoder")
+    if encoder:
+        hw_used = return_val.get("hw_accel", False)
+        print(f"Encoder: {encoder} (hw_accel={hw_used})")
 
-            try:
-                pb_resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}/playback", timeout=5.0)
-                if pb_resp.status_code == 200:
-                    print(f"Playback URL: {pb_resp.json().get('presigned_playback_url')}")
-            except Exception:
-                pass
-            break
+    timings = return_val.get("stage_timings")
+    if timings:
+        t_parts = [f"transcode: {timings.get('transcode_seconds')}s"]
+        if timings.get("quality_seconds") is not None:
+            t_parts.append(f"quality: {timings.get('quality_seconds')}s")
+        t_parts.append(f"total: {timings.get('total_seconds')}s")
+        print(f"Timings: {', '.join(t_parts)}")
 
-        if state == "failed":
-            print(f"Job failed: {status_data.get('failed_reason')}")
-            break
+    for r in return_val.get("renditions", []):
+        print(f"  {r['name']}: {r['resolution']} @ {r['bitrate_k']}k")
 
-        time.sleep(1)
+    qreport = return_val.get("quality_report", {})
+    print_quality_report(qreport, compute_quality=compute_quality)
+
+    try:
+        pb_resp = httpx.get(f"{api_base_url}/api/v1/jobs/{job_id}/playback", timeout=5.0)
+        if pb_resp.status_code == 200:
+            print(f"Playback URL: {pb_resp.json().get('presigned_playback_url')}")
+    except Exception:
+        pass
 
 
 def main():
