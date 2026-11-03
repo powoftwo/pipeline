@@ -2,7 +2,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, HTTPException, status
 
 from src.api.schemas import (
     JobCreateRequest,
@@ -23,44 +23,6 @@ from src.queue import (
 from src.s3 import s3_storage
 
 router = APIRouter(prefix="/api/v1", tags=["Jobs"])
-
-
-@router.post("/jobs/upload", response_model=JobStatusResponse, status_code=status.HTTP_202_ACCEPTED)
-async def upload_video_and_process(
-    file: UploadFile = File(...),
-    segment_duration: int = Form(4, ge=1, le=10),
-    compute_quality_metrics: bool = Form(True),
-    compute_vmaf: bool = Form(True),
-    compute_xpsnr: bool = Form(True),
-    hw_accel: bool = Form(False),
-):
-    uid = str(uuid.uuid4())
-    filename = Path(file.filename or "video.mp4").name
-    s3_key = f"uploads/{uid}/{filename}"
-
-    temp_file = settings.temp_path / f"up_{uid}_{filename}"
-    try:
-        with open(temp_file, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024):
-                buffer.write(chunk)
-        s3_storage.upload_file(temp_file, settings.S3_BUCKET_RAW, s3_key, file.content_type)
-    finally:
-        temp_file.unlink(missing_ok=True)
-
-    job = await enqueue_video_job(
-        s3_key=s3_key,
-        bucket=settings.S3_BUCKET_RAW,
-        options={
-            "segment_duration": segment_duration,
-            "compute_quality_metrics": compute_quality_metrics,
-            "compute_vmaf": compute_vmaf,
-            "compute_xpsnr": compute_xpsnr,
-            "hw_accel": hw_accel,
-        },
-        job_id=uid,
-    )
-
-    return JobStatusResponse(id=str(job.id), name=job.name, state="waiting", progress={"step": "enqueued", "percent": 0})
 
 
 @router.post("/jobs/presigned", response_model=PresignedUploadResponse)

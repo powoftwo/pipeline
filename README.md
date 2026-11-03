@@ -75,8 +75,6 @@ pipeline/
 │       ├── tus.py
 │       └── schemas.py
 └── scripts/
-    ├── init_buckets.py
-    ├── demo_client.py
     └── demo_tus_client.py
 ```
 
@@ -101,14 +99,8 @@ docker-compose up -d
 
 ---
 
-## Запуск демо-скриптов
+## Запуск демо-скрипта (TUS-загрузка)
 
-### 1. Тест multipart загрузки
-```bash
-.venv/bin/python -m scripts.demo_client
-```
-
-### 2. Тест докачиваемой TUS-загрузки чанками
 ```bash
 .venv/bin/python -m scripts.demo_tus_client
 ```
@@ -169,26 +161,22 @@ upload.start();
 
 ## REST API эндпоинты
 
-### 1. Загрузка видео
-- `POST /api/v1/jobs/upload` (`multipart/form-data`) — сохраняет в S3 и ставит задачу в BullMQ.
-  Параметры: `file`, `segment_duration` (по умолчанию 4), `hw_accel` (по умолчанию `false`), `compute_quality_metrics` (`true`), `compute_vmaf` (`true`), `compute_xpsnr` (`true`).
-
-### 2. Presigned URL
+### 1. Presigned URL
 - `POST /api/v1/jobs/presigned` — выдает прямую ссылку загрузки в S3.
 
-### 3. Задача для существующего ключа в S3
+### 2. Задача для существующего ключа в S3
 - `POST /api/v1/jobs` — создание задачи по `s3_key` с опциями (`segment_duration`, `hw_accel`, метрики).
 
-### 4. Очередь и статус
+### 3. Очередь и статус
 - `GET /api/v1/jobs` — список задач со статусами, таймингами (`duration_seconds`, `processed_on`, `finished_on`) и прогрессом.
 - `GET /api/v1/jobs/{job_id}` — шаг выполнения, процент, время и результат.
 - `POST /api/v1/jobs/{job_id}/cancel` — отмена активной или ожидающей задачи с прерыванием кодирования.
 - `DELETE /api/v1/jobs/{job_id}` — удаление задачи из очереди и хранилища Redis.
 
-### 5. HLS воспроизведение
+### 4. HLS воспроизведение
 - `GET /api/v1/jobs/{job_id}/playback` — прямая ссылка на `master.m3u8` и Presigned URL.
 
-### 6. Метрики качества (VMAF & XPSNR)
+### 5. Метрики качества (VMAF & XPSNR)
 - `GET /api/v1/jobs/{job_id}/metrics` — отчет по разрешениям:
   ```json
   {
