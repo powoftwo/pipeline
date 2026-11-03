@@ -67,8 +67,6 @@ pipeline/
 │   │   ├── probe.py
 │   │   ├── hls.py
 │   │   └── metrics.py
-│   ├── static/
-│   │   └── index.html
 │   ├── worker/
 │   │   └── processor.py
 │   └── api/
@@ -96,7 +94,6 @@ docker-compose up -d
 
 | Сервис | URL | Назначение |
 |---|---|---|
-| Web UI | [http://localhost:8000/](http://localhost:8000/) | Веб-интерфейс загрузки, плеера и метрик |
 | FastAPI Swagger | [http://localhost:8000/docs](http://localhost:8000/docs) | REST API документация |
 | BullStudio | [http://localhost:4000](http://localhost:4000) | Мониторинг BullMQ |
 | RustFS Console | [http://localhost:9001](http://localhost:9001) | S3 консоль (`admin` / `adminpassword`) |
