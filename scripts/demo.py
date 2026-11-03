@@ -34,9 +34,34 @@ def main():
         default=None,
         help="Path to input video file (optional; defaults to demo.mp4 next to script)",
     )
+    parser.add_argument(
+        "--hw",
+        action="store_true",
+        default=False,
+        help="Enable hardware acceleration",
+    )
+    parser.add_argument(
+        "--vmaf",
+        action="store_true",
+        default=False,
+        help="Enable VMAF quality calculation",
+    )
+    parser.add_argument(
+        "--xpsnr",
+        action="store_true",
+        default=False,
+        help="Enable XPSNR quality calculation",
+    )
     args = parser.parse_args()
 
+    compute_quality = args.vmaf or args.xpsnr
+    compute_vmaf = args.vmaf
+    compute_xpsnr = args.xpsnr
+
     print("TUS resumable upload demo client")
+    print(
+        f"Config: hw={args.hw}, vmaf={compute_vmaf}, xpsnr={compute_xpsnr}"
+    )
 
     if args.input_file:
         video_path = Path(args.input_file).expanduser().resolve()
@@ -77,9 +102,10 @@ def main():
         "filename": video_path.name,
         "filetype": filetype,
         "segment_duration": "2",
-        "compute_quality_metrics": "true",
-        "compute_vmaf": "true",
-        "compute_xpsnr": "true",
+        "compute_quality_metrics": "true" if compute_quality else "false",
+        "compute_vmaf": "true" if compute_vmaf else "false",
+        "compute_xpsnr": "true" if compute_xpsnr else "false",
+        "hw_accel": "true" if args.hw else "false",
         "auto_process": "true",
     }
 
@@ -127,16 +153,37 @@ def main():
             print("Job completed:")
             return_val = status_data.get("return_value") or {}
             print(f"Master playlist: {return_val.get('master_playlist_url')}")
+            encoder = return_val.get("encoder")
+            if encoder:
+                hw_used = return_val.get("hw_accel", False)
+                print(f"Encoder: {encoder} (hw_accel={hw_used})")
 
             for r in return_val.get("renditions", []):
                 print(f"  {r['name']}: {r['resolution']} @ {r['bitrate_k']}k")
 
             qreport = return_val.get("quality_report", {})
-            for rname, rinfo in qreport.get("renditions", {}).items():
-                metrics = rinfo.get("metrics", {})
-                vmaf = metrics.get("vmaf", {})
-                xpsnr = metrics.get("xpsnr", {})
-                print(f"  {rname}: VMAF={vmaf.get('mean')} XPSNR_Y={xpsnr.get('y_db')}dB")
+            renditions_qc = qreport.get("renditions", {})
+            if renditions_qc:
+                print("Quality metrics:")
+                for rname, rinfo in renditions_qc.items():
+                    metrics = rinfo.get("metrics", {})
+                    parts = []
+                    if "vmaf" in metrics:
+                        vmaf_data = metrics.get("vmaf") or {}
+                        if "mean" in vmaf_data:
+                            parts.append(f"VMAF={vmaf_data['mean']}")
+                        elif "error" in vmaf_data:
+                            parts.append(f"VMAF error: {vmaf_data['error']}")
+                    if "xpsnr" in metrics:
+                        xpsnr_data = metrics.get("xpsnr") or {}
+                        if "y_db" in xpsnr_data:
+                            parts.append(f"XPSNR_Y={xpsnr_data['y_db']}dB")
+                        elif "error" in xpsnr_data:
+                            parts.append(f"XPSNR error: {xpsnr_data['error']}")
+                    summary = " ".join(parts) if parts else "no metrics"
+                    print(f"  {rname}: {summary}")
+            elif compute_quality:
+                print("Quality report: no quality data available")
 
             pb_resp = httpx.get(f"{API_BASE_URL}/api/v1/jobs/{job_id}/playback")
             if pb_resp.status_code == 200:

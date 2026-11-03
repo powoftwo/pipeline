@@ -102,12 +102,16 @@ docker-compose up -d
 ## Запуск демо-скрипта (TUS-загрузка)
 
 ```bash
-# С генерацией/использованием demo.mp4 в папке scripts:
-.venv/bin/python -m scripts.demo
-
-# С указанием своего видеофайла:
-.venv/bin/python -m scripts.demo /path/to/video.mp4
+.venv/bin/python -m scripts.demo [path/to/video.mp4] [flags]
 ```
+
+### Флаги:
+- `[input_file]` — путь к видеофайлу (опционально; по умолчанию используется/генерируется `demo.mp4`)
+- `--hw` — аппаратное ускорение
+- `--vmaf` — расчет качества VMAF
+- `--xpsnr` — расчет качества XPSNR
+
+По умолчанию все фичи выключены.
 
 ---
 
