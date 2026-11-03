@@ -66,9 +66,12 @@ async def create_upload(
 
     if content_type == "application/offset+octet-stream" and upload_offset == "0":
         cur = 0
-        async for chunk in request.stream():
-            if chunk:
-                cur = tus_manager.append_chunk(upload.upload_id, cur, chunk)
+        part_path = tus_manager._part(upload.upload_id)
+        with open(part_path, "wb") as f:
+            async for chunk in request.stream():
+                if chunk:
+                    f.write(chunk)
+                    cur += len(chunk)
         tus_manager.update_offset(upload, cur)
         headers["Upload-Offset"] = str(cur)
 
@@ -124,9 +127,15 @@ async def patch_upload(
         raise HTTPException(409, f"Offset mismatch: {upload.offset} != {upload_offset}", headers={"Tus-Resumable": TUS_VER, "Upload-Offset": str(upload.offset)})
 
     cur = upload.offset
-    async for chunk in request.stream():
-        if chunk:
-            cur = tus_manager.append_chunk(upload_id, cur, chunk)
+    part_path = tus_manager._part(upload_id)
+    if not part_path.exists():
+        raise HTTPException(404, f"Upload part '{upload_id}' not found", headers={"Tus-Resumable": TUS_VER})
+
+    with open(part_path, "ab") as f:
+        async for chunk in request.stream():
+            if chunk:
+                f.write(chunk)
+                cur += len(chunk)
 
     if cur > upload.upload_length:
         raise HTTPException(400, "Bytes exceeded declared length", headers={"Tus-Resumable": TUS_VER})

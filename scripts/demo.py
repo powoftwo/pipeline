@@ -23,15 +23,36 @@ def upload_video_via_tus(
     print(f"Starting TUS upload ({total_size} bytes)...")
 
     tus_c = client.TusClient(endpoint)
-    uploader = tus_c.uploader(str(video_path), chunk_size=chunk_size, metadata=metadata)
+    uploader = tus_c.uploader(
+        str(video_path),
+        chunk_size=chunk_size,
+        metadata=metadata,
+        retries=5,
+        retry_delay=1,
+    )
 
     chunk_idx = 1
+    max_retries = 10
+    retry_count = 0
+
     while uploader.offset < total_size:
-        uploader.upload_chunk()
-        pct = (uploader.offset / total_size) * 100.0
-        print(f"  chunk {chunk_idx:02d}: {uploader.offset}/{total_size} bytes ({pct:.1f}%)")
-        chunk_idx += 1
-        time.sleep(0.05)
+        try:
+            uploader.upload_chunk()
+            pct = (uploader.offset / total_size) * 100.0
+            print(f"  chunk {chunk_idx:02d}: {uploader.offset}/{total_size} bytes ({pct:.1f}%)")
+            chunk_idx += 1
+            retry_count = 0
+            time.sleep(0.01)
+        except Exception as exc:
+            retry_count += 1
+            if retry_count > max_retries:
+                raise
+            print(f"  [warn] upload interrupted ({exc}), resuming offset... (retry {retry_count}/{max_retries})")
+            time.sleep(1)
+            try:
+                uploader.offset = uploader.get_offset()
+            except Exception:
+                pass
 
     print(f"Upload complete: {uploader.url}")
     return uploader.url
