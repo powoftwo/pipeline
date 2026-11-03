@@ -1,53 +1,28 @@
-aiohappyeyeballs==2.7.1
-aiohttp==3.14.5
-aiosignal==1.4.0
-annotated-doc==0.0.5
-annotated-types==0.8.0
-anyio==4.16.0
-attrs==26.1.0
-boto3==1.43.123
-botocore==1.43.123
-bullmq==3.4.6
-certifi==2026.10.23
-charset-normalizer==3.5.2
-click==8.5.0
-croniter==2.0.7
-fastapi==0.162.0
-ffmpeg-progress-yield==1.1.4
-ffmpeg-quality-metrics==3.13.0
-frozenlist==1.8.0
-h11==0.16.0
-httpcore==1.0.9
-httptools==0.9.0
-httpx==0.28.1
-idna==3.20
-jmespath==1.1.0
-msgpack==1.2.3
-multidict==7.2.1
-opentelemetry-api==1.45.2
-propcache==0.5.4
-pydantic==2.14.2
-pydantic-settings==2.16.2
-pydantic_core==2.50.2
-python-dateutil==2.9.0.post0
-python-dotenv==1.2.4
-python-multipart==0.0.33
-pytz==2026.6
-PyYAML==6.0.3
-redis==8.1.0
-requests==2.34.2
-s3transfer==0.19.3
-semver==3.1.0
-six==1.17.0
-starlette==1.10.0
-tinydb==4.9.0
-tqdm==4.70.1
-tuspy==1.1.0
-typing-inspection==0.4.4
-typing_extensions==4.16.0
-urllib3==2.8.0
-uvicorn==0.54.0
-uvloop==0.23.0
-watchfiles==1.3.0
-websockets==17.4
-yarl==1.25.1
+# ==============================================================================
+# Direct Dependencies for Adaptive HLS Video Processing Pipeline
+# (Full pinned lockfile available in requirements-lock.txt)
+# ==============================================================================
+
+# Web Framework & ASGI Server
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+python-multipart>=0.0.9
+
+# Queue & Background Jobs (BullMQ + Redis)
+bullmq>=3.4.0,<4.0.0
+redis>=5.0.0,<9.0.0
+
+# S3-Compatible Object Storage (RustFS / MinIO / AWS S3)
+boto3>=1.34.0,<2.0.0
+
+# Configuration & Data Validation
+pydantic>=2.8.0,<3.0.0
+pydantic-settings>=2.4.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+
+# Video Quality Metrics (VMAF, XPSNR)
+ffmpeg-quality-metrics>=3.12.0
+
+# TUS Resumable Upload Client & HTTP Client (Scripts / Demo)
+tuspy>=1.1.0
+httpx>=0.27.0

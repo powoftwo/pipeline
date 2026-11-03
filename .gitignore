@@ -24,9 +24,18 @@ wheels/
 .installed.cfg
 *.egg
 
-# Video processing temp
+# Video processing & test media
 /tmp/
+samples/
+media/
 *.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.flv
+*.wmv
+*.m4v
 *.ts
 *.m3u8
 *.log
@@ -37,9 +46,13 @@ wheels/
 # Environment
 .env
 
-# IDE
+# IDE & Editor
 .idea/
 .vscode/
+.run/
 *.swp
 *.swo
 .DS_Store
+
+# Agent Tooling
+.agents/

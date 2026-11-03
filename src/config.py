@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     QUEUE_NAME: str = "video-processing"
 
     S3_ENDPOINT_URL: str = "http://localhost:9000"
+    S3_CONSOLE_URL: str = "http://localhost:9001"
     S3_ACCESS_KEY: str = "admin"
     S3_SECRET_KEY: str = "adminpassword"
     S3_REGION: str = "us-east-1"

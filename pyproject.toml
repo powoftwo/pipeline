@@ -1,0 +1,31 @@
+[project]
+name = "video-processing-pipeline"
+version = "1.0.0"
+description = "Adaptive HLS Video Processing Pipeline with BullMQ, RustFS S3, and Quality Metrics (VMAF, XPSNR)"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Developer" }
+]
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.30.0,<1.0.0",
+    "python-multipart>=0.0.9",
+    "bullmq>=3.4.0,<4.0.0",
+    "redis>=5.0.0,<9.0.0",
+    "boto3>=1.34.0,<2.0.0",
+    "pydantic>=2.8.0,<3.0.0",
+    "pydantic-settings>=2.4.0,<3.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "ffmpeg-quality-metrics>=3.12.0",
+    "tuspy>=1.1.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

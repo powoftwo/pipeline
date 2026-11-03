@@ -49,7 +49,7 @@ async def root():
         "docs": "/docs",
         "tus": "/api/v1/tus",
         "bull_studio": "http://localhost:4000",
-        "s3_console": f"{settings.S3_ENDPOINT_URL}:9001",
+        "s3_console": settings.S3_CONSOLE_URL,
     }
 
 
