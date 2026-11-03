@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from tusclient import client
@@ -24,6 +25,75 @@ def generate_sample_video(output_path: Path, duration: int = 4) -> None:
         str(output_path),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def format_quality_table(qreport: dict) -> Optional[str]:
+    matrix = qreport.get("matrix") or {}
+    time_ranges = matrix.get("time_ranges") or []
+    renditions = matrix.get("renditions") or []
+    grid = matrix.get("grid") or {}
+
+    if not time_ranges or not renditions:
+        return None
+
+    has_vmaf = any("vmaf" in grid.get(tr, {}).get(r, {}) for tr in time_ranges for r in renditions)
+    has_xpsnr = any("xpsnr" in grid.get(tr, {}).get(r, {}) for tr in time_ranges for r in renditions)
+
+    if not has_vmaf and not has_xpsnr:
+        return None
+
+    headers = ["Time"] + renditions
+    rows = []
+    for tr in time_ranges:
+        row = [tr]
+        for r in renditions:
+            cell = grid.get(tr, {}).get(r, {})
+            parts = []
+            if has_vmaf and "vmaf" in cell:
+                v = cell["vmaf"]
+                parts.append(f"V:{v:.1f}" if has_xpsnr else f"{v:.1f}")
+            if has_xpsnr and "xpsnr" in cell:
+                x = cell["xpsnr"]
+                parts.append(f"X:{x:.1f}dB" if has_vmaf else f"{x:.1f} dB")
+            row.append("  ".join(parts) if parts else "-")
+        rows.append(row)
+
+    avg_row = ["Average"]
+    r_averages = qreport.get("renditions", {})
+    for r in renditions:
+        m = r_averages.get(r, {}).get("metrics", {})
+        parts = []
+        if has_vmaf and "vmaf" in m and "mean" in m["vmaf"]:
+            v = m["vmaf"]["mean"]
+            parts.append(f"V:{v:.1f}" if has_xpsnr else f"{v:.1f}")
+        if has_xpsnr and "xpsnr" in m and "y_db" in m["xpsnr"]:
+            x = m["xpsnr"]["y_db"]
+            parts.append(f"X:{x:.1f}dB" if has_vmaf else f"{x:.1f} dB")
+        avg_row.append("  ".join(parts) if parts else "-")
+
+    col_widths = [len(h) for h in headers]
+    for r in rows + [avg_row]:
+        for i, val in enumerate(r):
+            col_widths[i] = max(col_widths[i], len(val))
+
+    def make_line(sep="+", pad="-"):
+        return sep + sep.join(pad * (w + 2) for w in col_widths) + sep
+
+    def format_row(r):
+        return "| " + " | ".join(val.ljust(col_widths[i]) for i, val in enumerate(r)) + " |"
+
+    res = [
+        "Quality Metrics Table [Time] x [Resolution]:",
+        make_line(),
+        format_row(headers),
+        make_line("+", "="),
+    ]
+    for r in rows:
+        res.append(format_row(r))
+    res.append(make_line())
+    res.append(format_row(avg_row))
+    res.append(make_line())
+    return "\n".join(res)
 
 
 def main():
@@ -170,8 +240,12 @@ def main():
                 print(f"  {r['name']}: {r['resolution']} @ {r['bitrate_k']}k")
 
             qreport = return_val.get("quality_report", {})
+            tbl = format_quality_table(qreport)
+            if tbl:
+                print(f"\n{tbl}\n")
+
             renditions_qc = qreport.get("renditions", {})
-            if renditions_qc:
+            if renditions_qc and not tbl:
                 print("Quality metrics:")
                 for rname, rinfo in renditions_qc.items():
                     metrics = rinfo.get("metrics", {})
