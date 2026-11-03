@@ -16,7 +16,7 @@ TUS_ENDPOINT = f"{API_BASE_URL}/api/v1/tus"
 
 
 def upload_video_via_tus(
-    endpoint: str, video_path: Path, metadata: dict, chunk_size: int = 256 * 1024
+    endpoint: str, video_path: Path, metadata: dict, chunk_size: int = 2 * 1024 * 1024
 ) -> str:
     """Upload video file chunk-by-chunk via TUS protocol and return upload URL."""
     total_size = video_path.stat().st_size
